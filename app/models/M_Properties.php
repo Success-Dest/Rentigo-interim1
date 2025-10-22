@@ -5,18 +5,34 @@ class M_Properties
 
     public function __construct()
     {
-        $this->db = new Database();
+        $this->db = new Database;
     }
 
-    // CREATE - Add new property
+    // Get properties by landlord
+    public function getPropertiesByLandlord($landlordId)
+    {
+        $this->db->query('SELECT * FROM properties WHERE landlord_id = :landlord_id ORDER BY created_at DESC');
+        $this->db->bind(':landlord_id', $landlordId);
+
+        return $this->db->resultSet();
+    }
+
+    // Get property by ID
+    public function getPropertyById($id)
+    {
+        $this->db->query('SELECT * FROM properties WHERE id = :id');
+        $this->db->bind(':id', $id);
+
+        return $this->db->single();
+    }
+
+    // Add property (existing method)
     public function addProperty($data)
     {
-        $this->db->query('INSERT INTO properties 
-            (landlord_id, address, property_type, bedrooms, bathrooms, sqft, rent, 
-             deposit, available_date, parking, pet_policy, laundry, description, status) 
-             VALUES (:landlord_id, :address, :property_type, :bedrooms, :bathrooms, :sqft, :rent, 
-                     :deposit, :available_date, :parking, :pet_policy, :laundry, :description, :status)');
+        $this->db->query('INSERT INTO properties (landlord_id, address, property_type, bedrooms, bathrooms, sqft, rent, deposit, available_date, parking, pet_policy, laundry, description, status) 
+                         VALUES (:landlord_id, :address, :property_type, :bedrooms, :bathrooms, :sqft, :rent, :deposit, :available_date, :parking, :pet_policy, :laundry, :description, :status)');
 
+        // Bind values
         $this->db->bind(':landlord_id', $data['landlord_id']);
         $this->db->bind(':address', $data['address']);
         $this->db->bind(':property_type', $data['property_type']);
@@ -30,55 +46,59 @@ class M_Properties
         $this->db->bind(':pet_policy', $data['pet_policy']);
         $this->db->bind(':laundry', $data['laundry']);
         $this->db->bind(':description', $data['description']);
-        $this->db->bind(':status', $data['status']); // e.g., "available", "draft", "rented"
+        $this->db->bind(':status', $data['status']);
 
         return $this->db->execute();
     }
 
-    // READ - Get all properties
-    public function getAllProperties()
+    // NEW METHOD: Add property and return ID
+    public function addPropertyAndReturnId($data)
     {
-        $this->db->query('SELECT p.*, u.name as landlord_name 
-                          FROM properties p
-                          JOIN users u ON p.landlord_id = u.id
-                          ORDER BY p.created_at DESC');
-        return $this->db->resultSet();
+        $this->db->query('INSERT INTO properties (landlord_id, address, property_type, bedrooms, bathrooms, sqft, rent, deposit, available_date, parking, pet_policy, laundry, description, status) 
+                         VALUES (:landlord_id, :address, :property_type, :bedrooms, :bathrooms, :sqft, :rent, :deposit, :available_date, :parking, :pet_policy, :laundry, :description, :status)');
+
+        // Bind values
+        $this->db->bind(':landlord_id', $data['landlord_id']);
+        $this->db->bind(':address', $data['address']);
+        $this->db->bind(':property_type', $data['property_type']);
+        $this->db->bind(':bedrooms', $data['bedrooms']);
+        $this->db->bind(':bathrooms', $data['bathrooms']);
+        $this->db->bind(':sqft', $data['sqft']);
+        $this->db->bind(':rent', $data['rent']);
+        $this->db->bind(':deposit', $data['deposit']);
+        $this->db->bind(':available_date', $data['available_date']);
+        $this->db->bind(':parking', $data['parking']);
+        $this->db->bind(':pet_policy', $data['pet_policy']);
+        $this->db->bind(':laundry', $data['laundry']);
+        $this->db->bind(':description', $data['description']);
+        $this->db->bind(':status', $data['status']);
+
+        if ($this->db->execute()) {
+            return $this->db->lastInsertId();
+        }
+
+        return false;
     }
 
-    // READ - Get property by ID
-    public function getPropertyById($id)
-    {
-        $this->db->query('SELECT * FROM properties WHERE id = :id');
-        $this->db->bind(':id', $id);
-        return $this->db->single();
-    }
-
-    // READ - Get properties by landlord
-    public function getPropertiesByLandlord($landlord_id)
-    {
-        $this->db->query('SELECT * FROM properties WHERE landlord_id = :landlord_id ORDER BY created_at DESC');
-        $this->db->bind(':landlord_id', $landlord_id);
-        return $this->db->resultSet();
-    }
-
-    // UPDATE - Edit property
+    // Update property
     public function update($data)
     {
         $this->db->query('UPDATE properties SET 
-                    address = :address, 
-                    property_type = :property_type,
-                    bedrooms = :bedrooms, 
-                    bathrooms = :bathrooms, 
-                    sqft = :sqft, 
-                    rent = :rent, 
-                    deposit = :deposit, 
-                    available_date = :available_date, 
-                    parking = :parking, 
-                    pet_policy = :pet_policy, 
-                    laundry = :laundry, 
-                    description = :description
-                  WHERE id = :id');
+                         address = :address, 
+                         property_type = :property_type, 
+                         bedrooms = :bedrooms, 
+                         bathrooms = :bathrooms, 
+                         sqft = :sqft, 
+                         rent = :rent, 
+                         deposit = :deposit, 
+                         available_date = :available_date, 
+                         parking = :parking, 
+                         pet_policy = :pet_policy, 
+                         laundry = :laundry, 
+                         description = :description 
+                         WHERE id = :id');
 
+        // Bind values
         $this->db->bind(':id', $data['id']);
         $this->db->bind(':address', $data['address']);
         $this->db->bind(':property_type', $data['property_type']);
@@ -96,72 +116,94 @@ class M_Properties
         return $this->db->execute();
     }
 
-
-
-    // public function updateProperty($data) {
-    //     // Update properties table
-    //     $this->db->query('UPDATE properties 
-    //         SET address = :address, 
-    //             rent = :rent, 
-    //             status = :status,
-    //             property_type = :property_type,
-    //             issue = :issue,
-    //             tenant = :tenant,
-    //             available_date = :available_date
-    //         WHERE id = :id');
-
-    //     $this->db->bind(':address', $data['address']);
-    //     $this->db->bind(':rent', $data['rent']);
-    //     $this->db->bind(':status', $data['status']);
-    //     $this->db->bind(':property_type', $data['property_type'] ?? null);
-    //     $this->db->bind(':issue', $data['issue'] ?? null);
-    //     $this->db->bind(':tenant', $data['tenant'] ?? null);
-    //     $this->db->bind(':available_date', $data['available_date'] ?? null);
-    //     $this->db->bind(':id', $data['id']);
-
-    //     return $this->db->execute(); // execute once
-    // }
-
-
-    // DELETE - Remove property
+    // Delete property
     public function deleteProperty($id)
     {
         $this->db->query('DELETE FROM properties WHERE id = :id');
         $this->db->bind(':id', $id);
+
         return $this->db->execute();
     }
 
-    // Search property (address/type/landlord)
-    public function searchProperties($searchTerm, $type = '', $status = '')
+    // Get properties by landlord ID (alternative method name)
+    public function getPropertiesByLandlordId($landlordId)
     {
-        $query = 'SELECT * FROM properties WHERE 1=1';
+        return $this->getPropertiesByLandlord($landlordId);
+    }
 
-        if (!empty($searchTerm)) {
-            $query .= ' AND (address LIKE :search OR description LIKE :search)';
-        }
+    // Count properties by landlord
+    public function countPropertiesByLandlord($landlordId)
+    {
+        $this->db->query('SELECT COUNT(*) as count FROM properties WHERE landlord_id = :landlord_id');
+        $this->db->bind(':landlord_id', $landlordId);
 
-        if (!empty($type)) {
-            $query .= ' AND property_type = :type';
-        }
+        $result = $this->db->single();
+        return $result ? $result->count : 0;
+    }
 
-        if (!empty($status)) {
-            $query .= ' AND status = :status';
-        }
-
-        $query .= ' ORDER BY created_at DESC';
-
-        $this->db->query($query);
-
-        if (!empty($searchTerm)) {
-            $this->db->bind(':search', '%' . $searchTerm . '%');
-        }
-        if (!empty($type)) {
-            $this->db->bind(':type', $type);
-        }
-        if (!empty($status)) {
-            $this->db->bind(':status', $status);
-        }
+    // Get properties by status
+    public function getPropertiesByStatus($landlordId, $status)
+    {
+        $this->db->query('SELECT * FROM properties WHERE landlord_id = :landlord_id AND status = :status ORDER BY created_at DESC');
+        $this->db->bind(':landlord_id', $landlordId);
+        $this->db->bind(':status', $status);
 
         return $this->db->resultSet();
+    }
+
+    // Get properties by type
+    public function getPropertiesByType($landlordId, $type)
+    {
+        $this->db->query('SELECT * FROM properties WHERE landlord_id = :landlord_id AND property_type = :property_type ORDER BY created_at DESC');
+        $this->db->bind(':landlord_id', $landlordId);
+        $this->db->bind(':property_type', $type);
+
+        return $this->db->resultSet();
+    }
+
+    // Search properties
+    public function searchProperties($landlordId, $searchTerm)
+    {
+        $this->db->query('SELECT * FROM properties WHERE landlord_id = :landlord_id AND (address LIKE :search OR description LIKE :search) ORDER BY created_at DESC');
+        $this->db->bind(':landlord_id', $landlordId);
+        $this->db->bind(':search', '%' . $searchTerm . '%');
+
+        return $this->db->resultSet();
+    }
+
+    // Get recent properties
+    public function getRecentProperties($landlordId, $limit = 5)
+    {
+        $this->db->query('SELECT * FROM properties WHERE landlord_id = :landlord_id ORDER BY created_at DESC LIMIT :limit');
+        $this->db->bind(':landlord_id', $landlordId);
+        $this->db->bind(':limit', $limit);
+
+        return $this->db->resultSet();
+    }
+
+    // Update property status
+    public function updateStatus($propertyId, $status)
+    {
+        $this->db->query('UPDATE properties SET status = :status WHERE id = :id');
+        $this->db->bind(':id', $propertyId);
+        $this->db->bind(':status', $status);
+
+        return $this->db->execute();
+    }
+
+    // Get property statistics
+    public function getPropertyStats($landlordId)
+    {
+        $this->db->query('SELECT 
+                         COUNT(*) as total_properties,
+                         COUNT(CASE WHEN status = "occupied" THEN 1 END) as occupied,
+                         COUNT(CASE WHEN status = "vacant" THEN 1 END) as vacant,
+                         COUNT(CASE WHEN status = "maintenance" THEN 1 END) as maintenance,
+                         AVG(rent) as average_rent,
+                         SUM(CASE WHEN status = "occupied" THEN rent ELSE 0 END) as monthly_revenue
+                         FROM properties WHERE landlord_id = :landlord_id');
+        $this->db->bind(':landlord_id', $landlordId);
+
+        return $this->db->single();
     }
 }
