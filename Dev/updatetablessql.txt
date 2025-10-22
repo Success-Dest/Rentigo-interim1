@@ -1,0 +1,131 @@
+-- ============================================
+-- RENTIGO - Complete Production Database Setup
+-- Created: 2025-10-19
+-- Author: Jeyaneedhan
+-- Description: Full database schema for Rentigo property management system
+-- ============================================
+
+-- Create database
+CREATE DATABASE IF NOT EXISTS rentigo_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE rentigo_db;
+
+-- ============================================
+-- 1. USERS TABLE (Base table for all user types)
+-- ============================================
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    user_type ENUM('admin', 'landlord', 'tenant', 'property_manager') NOT NULL,
+    account_status ENUM('pending', 'active', 'suspended', 'rejected') DEFAULT 'active',
+    terms_accepted_at TIMESTAMP NULL,
+    terms_version VARCHAR(10) DEFAULT '1.0',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 2. PROPERTY MANAGER TABLE (PM-specific data)
+-- ============================================
+DROP TABLE IF EXISTS property_manager;
+CREATE TABLE property_manager (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT UNIQUE NOT NULL,
+    employee_id_document LONGBLOB NULL,
+    employee_id_filename VARCHAR(255) NULL,
+    employee_id_filetype VARCHAR(50) NULL,
+    employee_id_filesize INT NULL,
+    approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+    approved_by INT NULL,
+    approved_at TIMESTAMP NULL,
+    rejection_reason TEXT NULL,
+    phone VARCHAR(20) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 3. PROPERTIES TABLE (Landlord properties)
+-- ============================================
+DROP TABLE IF EXISTS properties;
+CREATE TABLE properties (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    landlord_id INT NOT NULL,
+    manager_id INT NULL,  -- ← ADDED: Property Manager assigned to this property
+    address TEXT NOT NULL,
+    property_type ENUM('apartment', 'house', 'condo', 'townhouse') NOT NULL,
+    bedrooms INT NOT NULL,
+    bathrooms DECIMAL(2,1) NOT NULL,
+    sqft INT NULL,
+    rent DECIMAL(10,2) NOT NULL,
+    deposit DECIMAL(10,2) NULL,
+    description TEXT NULL,
+    status ENUM('available', 'occupied', 'maintenance', 'vacant', 'pending') DEFAULT 'available',
+    available_date DATE NULL,
+    parking VARCHAR(50) DEFAULT '0',
+    pet_policy ENUM('no', 'cats', 'dogs', 'both') NOT NULL DEFAULT 'no',
+    laundry ENUM('none', 'shared', 'in_unit', 'hookups', 'included') NOT NULL DEFAULT 'none',
+    tenant VARCHAR(200) NULL,
+    issue TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (landlord_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL  -- ← ADDED
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 4. SERVICE PROVIDERS TABLE (Admin managed)
+-- ============================================
+DROP TABLE IF EXISTS service_providers;
+CREATE TABLE service_providers (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    company VARCHAR(100),
+    specialty ENUM('plumbing', 'electrical', 'hvac', 'general', 'cleaning', 'landscaping') NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(100),
+    address TEXT,
+    rating DECIMAL(3,2) DEFAULT 0.00,
+    status ENUM('active', 'inactive') DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 5. MAINTENANCE REQUESTS TABLE (Tenant)
+-- ============================================
+DROP TABLE IF EXISTS maintenance_requests;
+CREATE TABLE `maintenance_requests` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `tenant_id` INT NOT NULL,
+  `property_id` INT NOT NULL,
+  `title` VARCHAR(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `description` TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `category` VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `priority` ENUM('low', 'medium', 'high', 'emergency') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'medium',
+  `status` ENUM('pending', 'in_progress', 'resolved', 'cancelled') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'pending',
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_id` (`tenant_id`),
+  KEY `idx_property_id` (`property_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ============================================
+-- 6. INSPECTIONS TABLE (PM)
+-- ============================================
+DROP TABLE IF EXISTS inspections;
+CREATE TABLE inspections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    property VARCHAR(255) NOT NULL,
+    issues INT DEFAULT 0,
+    type ENUM('issue', 'maintenance') NOT NULL,
+    scheduled_date DATE NOT NULL,
+    status ENUM('scheduled', 'completed', 'pending') DEFAULT 'scheduled',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
