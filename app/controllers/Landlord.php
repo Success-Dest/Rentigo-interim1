@@ -6,7 +6,7 @@ class Landlord extends Controller
     private $userModel;
     private $propertyModel;
     private $maintenanceModel;
-    private $rentOptimizer;  // Rent Optimizer
+    private $rentOptimizer;
 
     public function __construct()
     {
@@ -18,7 +18,7 @@ class Landlord extends Controller
         // Initialize models
         $this->userModel = $this->model('M_Users');
         $this->propertyModel = $this->model('M_Properties');
-        $this->rentOptimizer = $this->model('M_RentOptimizer');  // ✨ NEW
+        $this->rentOptimizer = $this->model('M_RentOptimizer');
     }
 
     public function index()
@@ -39,6 +39,16 @@ class Landlord extends Controller
     public function properties()
     {
         $properties = $this->propertyModel->getPropertiesByLandlord($_SESSION['user_id']);
+
+        // Add property images and documents to each property
+        if ($properties) {
+            foreach ($properties as $property) {
+                $property->images = $this->getPropertyImages($property->id);
+                $property->documents = $this->getPropertyDocuments($property->id);
+                $property->primary_image = $this->getPrimaryPropertyImage($property->id);
+            }
+        }
+
         $data = [
             'properties' => $properties
         ];
@@ -48,6 +58,21 @@ class Landlord extends Controller
     public function add_property()
     {
         if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            // Check for upload errors first
+            $uploadError = $this->checkUploadLimits();
+            if ($uploadError) {
+                flash('property_message', $uploadError, 'alert alert-danger');
+                redirect('landlord/add_property');
+                return;
+            }
+
+            // Check if POST data is available
+            if (empty($_POST)) {
+                flash('property_message', 'Form data was not received. This might be due to file size limits.', 'alert alert-danger');
+                redirect('landlord/add_property');
+                return;
+            }
+
             $_POST = filter_input_array(INPUT_POST, FILTER_SANITIZE_SPECIAL_CHARS);
 
             // Map pet policy and laundry values to match database ENUM
@@ -56,31 +81,83 @@ class Landlord extends Controller
 
             $data = [
                 'landlord_id'   => $_SESSION['user_id'],
-                'address'       => trim($_POST['address']),
-                'property_type' => trim($_POST['type']),
-                'bedrooms'      => (int)$_POST['bedrooms'],
-                'bathrooms'     => (float)$_POST['bathrooms'],
-                'sqft'          => (int)$_POST['sqft'],
-                'rent'          => (float)$_POST['rent'],
-                'deposit'       => (float)$_POST['deposit'],
+                'address'       => trim($_POST['address'] ?? ''),
+                'property_type' => trim($_POST['type'] ?? ''),
+                'bedrooms'      => (int)($_POST['bedrooms'] ?? 0),
+                'bathrooms'     => (float)($_POST['bathrooms'] ?? 0),
+                'sqft'          => !empty($_POST['sqft']) ? (int)$_POST['sqft'] : null,
+                'rent'          => (float)($_POST['rent'] ?? 0),
+                'deposit'       => !empty($_POST['deposit']) ? (float)$_POST['deposit'] : null,
                 'available_date' => !empty($_POST['available_date']) ? $_POST['available_date'] : null,
                 'parking'       => isset($_POST['parking']) && is_numeric($_POST['parking']) ? (int)$_POST['parking'] : 0,
-                'pet_policy'    => in_array($_POST['pets'], $petOptions) ? $_POST['pets'] : 'no',
-                'laundry'       => in_array($_POST['laundry'], $laundryOptions) ? $_POST['laundry'] : 'none',
-                'description'   => trim($_POST['description']),
+                'pet_policy'    => in_array($_POST['pets'] ?? '', $petOptions) ? $_POST['pets'] : 'no',
+                'laundry'       => in_array($_POST['laundry'] ?? '', $laundryOptions) ? $_POST['laundry'] : 'none',
+                'description'   => trim($_POST['description'] ?? ''),
                 'status'        => 'vacant'
             ];
 
-            if ($this->propertyModel->addProperty($data)) {
-                flash('property_message', 'Property Added Successfully');
+            // ENHANCED VALIDATION with better error messages
+            $errors = $this->validatePropertyData($data);
+
+            if (!empty($errors)) {
+                flash('property_message', implode(', ', $errors), 'alert alert-danger');
+                redirect('landlord/add_property');
+                return;
+            }
+
+            // Add property first and get the ID
+            $propertyId = $this->propertyModel->addPropertyAndReturnId($data);
+
+            if ($propertyId) {
+                // Handle image uploads
+                $imageUploadResult = $this->handleImageUploads($propertyId);
+
+                // Handle document uploads
+                $documentUploadResult = $this->handleDocumentUploads($propertyId);
+
+                // Prepare success message
+                $messages = [];
+                if ($imageUploadResult['success'] && $imageUploadResult['count'] > 0) {
+                    $messages[] = $imageUploadResult['count'] . ' images uploaded';
+                }
+                if ($documentUploadResult['success'] && $documentUploadResult['count'] > 0) {
+                    $messages[] = $documentUploadResult['count'] . ' documents uploaded';
+                }
+
+                if (!empty($messages)) {
+                    flash('property_message', 'Property added successfully with ' . implode(' and ', $messages), 'alert alert-success');
+                } else {
+                    flash('property_message', 'Property added successfully (no files uploaded)', 'alert alert-success');
+                }
+
+                // Check for any upload errors
+                $warnings = [];
+                if (!$imageUploadResult['success']) {
+                    $warnings[] = 'Image upload failed: ' . $imageUploadResult['message'];
+                }
+                if (!$documentUploadResult['success']) {
+                    $warnings[] = 'Document upload failed: ' . $documentUploadResult['message'];
+                }
+
+                if (!empty($warnings)) {
+                    flash('property_warning', implode('. ', $warnings), 'alert alert-warning');
+                }
+
                 redirect('landlord/properties');
             } else {
-                die('Something went wrong.');
+                flash('property_message', 'Failed to add property. Please check all fields and try again.', 'alert alert-danger');
+                redirect('landlord/add_property');
             }
         } else {
+            // Get PHP upload limits for display
+            $maxFileSize = $this->getMaxFileSize();
+            $maxPostSize = $this->getMaxPostSize();
+
             // Initialize empty data for the form
             $data = [
                 'title' => 'Add Property',
+                'max_file_size' => $maxFileSize,
+                'max_post_size' => $maxPostSize,
                 'address' => '',
                 'type' => '',
                 'bedrooms' => '',
@@ -104,9 +181,539 @@ class Landlord extends Controller
         }
     }
 
+    // NEW METHOD: Enhanced validation for property data
+    private function validatePropertyData($data)
+    {
+        $errors = [];
+
+        // Required field validation
+        if (empty($data['address'])) {
+            $errors[] = 'Property address is required';
+        }
+
+        if (empty($data['property_type'])) {
+            $errors[] = 'Property type is required';
+        }
+
+        if ($data['bedrooms'] < 0) {
+            $errors[] = 'Number of bedrooms cannot be negative';
+        }
+
+        if ($data['bathrooms'] <= 0) {
+            $errors[] = 'Number of bathrooms is required and must be greater than 0';
+        }
+
+        // Enhanced rent validation
+        if ($data['rent'] <= 0) {
+            $errors[] = 'Monthly rent is required and must be greater than 0';
+        } elseif ($data['rent'] < 1000) {
+            $errors[] = 'Monthly rent must be at least Rs 1,000';
+        } elseif ($data['rent'] > 10000000) {
+            $errors[] = 'Monthly rent cannot exceed Rs 10,000,000';
+        }
+
+        // NEW: Square footage validation
+        if ($data['sqft'] !== null) {
+            if ($data['sqft'] < 1) {
+                $errors[] = 'Square footage must be at least 1 sq ft';
+            } elseif ($data['sqft'] > 50000) {
+                $errors[] = 'Square footage cannot exceed 50,000 sq ft';
+            }
+        }
+
+        // NEW: Security deposit validation
+        if ($data['deposit'] !== null) {
+            if ($data['deposit'] < 0) {
+                $errors[] = 'Security deposit cannot be negative';
+            } elseif ($data['deposit'] > 10000000) {
+                $errors[] = 'Security deposit cannot exceed Rs 10,000,000';
+            }
+        }
+
+        // Additional logical validation
+        if ($data['deposit'] !== null && $data['rent'] > 0) {
+            // Warn if deposit is more than 6 months rent (unusual but not error)
+            if ($data['deposit'] > ($data['rent'] * 6)) {
+                // This could be a warning, but we'll allow it
+                error_log("Warning: Security deposit (" . $data['deposit'] . ") is more than 6 months rent (" . $data['rent'] . ") for property");
+            }
+        }
+
+        return $errors;
+    }
+
+    // NEW METHOD: Check upload limits and errors
+    private function checkUploadLimits()
+    {
+        // Check if POST data exceeded the limit
+        if (empty($_POST) && empty($_FILES) && $_SERVER['CONTENT_LENGTH'] > 0) {
+            $maxPostSize = $this->getMaxPostSize();
+            $contentLength = $_SERVER['CONTENT_LENGTH'];
+            return "Upload failed: Total data size (" . $this->formatBytes($contentLength) . ") exceeds server limit (" . $this->formatBytes($maxPostSize) . "). Please reduce image file sizes or upload fewer images.";
+        }
+
+        // Check for specific upload errors
+        if (isset($_FILES['photos']['error']) && is_array($_FILES['photos']['error'])) {
+            foreach ($_FILES['photos']['error'] as $error) {
+                if ($error == UPLOAD_ERR_FORM_SIZE || $error == UPLOAD_ERR_INI_SIZE) {
+                    $maxFileSize = $this->getMaxFileSize();
+                    return "Upload failed: One or more files exceed the maximum file size limit (" . $this->formatBytes($maxFileSize) . "). Please reduce image file sizes.";
+                }
+            }
+        }
+
+        return null; // No errors
+    }
+
+    // NEW METHOD: Get max file upload size
+    private function getMaxFileSize()
+    {
+        $maxUpload = $this->parseSize(ini_get('upload_max_filesize'));
+        $maxPost = $this->parseSize(ini_get('post_max_size'));
+        return min($maxUpload, $maxPost);
+    }
+
+    // NEW METHOD: Get max POST size
+    private function getMaxPostSize()
+    {
+        return $this->parseSize(ini_get('post_max_size'));
+    }
+
+    // NEW METHOD: Parse size string to bytes
+    private function parseSize($size)
+    {
+        $unit = preg_replace('/[^bkmgtpezy]/i', '', $size); // Remove the non-unit characters from the size.
+        $size = preg_replace('/[^0-9\.]/', '', $size); // Remove the non-numeric characters from the size.
+        if ($unit) {
+            // Find the position of the unit in the ordered string which is the power of magnitude to multiply a kilobyte by.
+            return round($size * pow(1024, stripos('bkmgtpezy', $unit[0])));
+        } else {
+            return round($size);
+        }
+    }
+
+    // NEW METHOD: Format bytes to human readable
+    private function formatBytes($bytes, $precision = 2)
+    {
+        $units = array('B', 'KB', 'MB', 'GB', 'TB');
+
+        for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
+            $bytes /= 1024;
+        }
+
+        return round($bytes, $precision) . ' ' . $units[$i];
+    }
+
+    // FIXED METHOD: Handle image uploads to local storage with proper error handling
+    private function handleImageUploads($propertyId)
+    {
+        // Check if files were uploaded properly
+        if (
+            !isset($_FILES['photos']) ||
+            !isset($_FILES['photos']['name']) ||
+            !is_array($_FILES['photos']['name']) ||
+            empty($_FILES['photos']['name']) ||
+            empty($_FILES['photos']['name'][0])
+        ) {
+            return ['success' => true, 'count' => 0, 'message' => 'No images to upload'];
+        }
+
+        // Define upload directory in public folder
+        $uploadBaseDir = APPROOT . '/../public/uploads/properties/';
+        $propertyDir = $uploadBaseDir . 'property_' . $propertyId . '/';
+
+        // Create directories if they don't exist
+        if (!is_dir($uploadBaseDir)) {
+            if (!mkdir($uploadBaseDir, 0755, true)) {
+                error_log("Failed to create base upload directory: " . $uploadBaseDir);
+                return ['success' => false, 'count' => 0, 'message' => 'Failed to create base upload directory'];
+            }
+        }
+
+        if (!is_dir($propertyDir)) {
+            if (!mkdir($propertyDir, 0755, true)) {
+                error_log("Failed to create property directory: " . $propertyDir);
+                return ['success' => false, 'count' => 0, 'message' => 'Failed to create property directory'];
+            }
+        }
+
+        $uploadedCount = 0;
+        $errors = [];
+
+        // Safely count files
+        $fileNames = $_FILES['photos']['name'];
+        if (!is_array($fileNames)) {
+            $fileNames = [$fileNames];
+        }
+
+        $totalFiles = count($fileNames);
+
+        // Limit to 5 images max to avoid size issues
+        $maxImages = min($totalFiles, 5);
+
+        for ($i = 0; $i < $maxImages; $i++) {
+            // Check if this file upload was successful
+            if (!isset($_FILES['photos']['error'][$i]) || $_FILES['photos']['error'][$i] !== UPLOAD_ERR_OK) {
+                $errorMsg = $this->getUploadErrorMessage($_FILES['photos']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
+                $errors[] = "Upload error for file " . ($i + 1) . ": " . $errorMsg;
+                continue;
+            }
+
+            $tmpName = $_FILES['photos']['tmp_name'][$i];
+            $originalName = $_FILES['photos']['name'][$i];
+
+            // Skip empty file names
+            if (empty($originalName)) {
+                continue;
+            }
+
+            // Validate file exists and is readable
+            if (!file_exists($tmpName) || !is_readable($tmpName)) {
+                $errors[] = "File not accessible: " . $originalName;
+                continue;
+            }
+
+            // Validate file type using finfo
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $fileType = finfo_file($finfo, $tmpName);
+                finfo_close($finfo);
+            } else {
+                // Fallback to mime_content_type if finfo is not available
+                $fileType = mime_content_type($tmpName);
+            }
+
+            $allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+            if (!in_array($fileType, $allowedTypes)) {
+                $errors[] = "Invalid file type for: " . $originalName . " (Type: " . $fileType . ")";
+                continue;
+            }
+
+            // Validate file size (2MB max per image to avoid issues)
+            if ($_FILES['photos']['size'][$i] > 2 * 1024 * 1024) {
+                $errors[] = "File too large: " . $originalName . " (" . $this->formatBytes($_FILES['photos']['size'][$i]) . "). Max 2MB per image.";
+                continue;
+            }
+
+            // Generate unique filename with timestamp
+            $extension = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+            $filename = 'img_' . date('Y-m-d_H-i-s') . '_' . $i . '.' . $extension;
+            $filePath = $propertyDir . $filename;
+
+            // Move uploaded file
+            if (move_uploaded_file($tmpName, $filePath)) {
+                $uploadedCount++;
+
+                // Create a primary image marker for the first uploaded image
+                if ($uploadedCount === 1) {
+                    $primaryFile = $propertyDir . 'primary.txt';
+                    file_put_contents($primaryFile, $filename);
+                }
+
+                // Log successful upload
+                error_log("Successfully uploaded image: " . $filename . " for property " . $propertyId);
+            } else {
+                $errors[] = "Failed to upload: " . $originalName;
+                error_log("Failed to move uploaded file from " . $tmpName . " to " . $filePath);
+            }
+        }
+
+        // Return result
+        if ($uploadedCount > 0) {
+            $message = $uploadedCount . " images uploaded successfully";
+            if (!empty($errors)) {
+                $message .= ". Issues: " . implode(', ', $errors);
+            }
+            return [
+                'success' => true,
+                'count' => $uploadedCount,
+                'message' => $message
+            ];
+        } else {
+            return [
+                'success' => false,
+                'count' => 0,
+                'message' => !empty($errors) ? implode(', ', $errors) : 'No images were uploaded'
+            ];
+        }
+    }
+
+    // NEW METHOD: Handle document uploads to local storage
+    private function handleDocumentUploads($propertyId)
+    {
+        // Check if documents were uploaded properly
+        if (
+            !isset($_FILES['documents']) ||
+            !isset($_FILES['documents']['name']) ||
+            !is_array($_FILES['documents']['name']) ||
+            empty($_FILES['documents']['name']) ||
+            empty($_FILES['documents']['name'][0])
+        ) {
+            return ['success' => true, 'count' => 0, 'message' => 'No documents to upload'];
+        }
+
+        // Define upload directory in public folder
+        $uploadBaseDir = APPROOT . '/../public/uploads/properties/';
+        $propertyDir = $uploadBaseDir . 'property_' . $propertyId . '/documents/';
+
+        // Create directories if they don't exist
+        if (!is_dir($propertyDir)) {
+            if (!mkdir($propertyDir, 0755, true)) {
+                error_log("Failed to create property documents directory: " . $propertyDir);
+                return ['success' => false, 'count' => 0, 'message' => 'Failed to create documents directory'];
+            }
+        }
+
+        $uploadedCount = 0;
+        $errors = [];
+
+        // Safely count files
+        $fileNames = $_FILES['documents']['name'];
+        if (!is_array($fileNames)) {
+            $fileNames = [$fileNames];
+        }
+
+        $totalFiles = count($fileNames);
+
+        // Limit to 3 documents max
+        $maxDocuments = min($totalFiles, 3);
+
+        for ($i = 0; $i < $maxDocuments; $i++) {
+            // Check if this file upload was successful
+            if (!isset($_FILES['documents']['error'][$i]) || $_FILES['documents']['error'][$i] !== UPLOAD_ERR_OK) {
+                $errorMsg = $this->getUploadErrorMessage($_FILES['documents']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
+                $errors[] = "Upload error for document " . ($i + 1) . ": " . $errorMsg;
+                continue;
+            }
+
+            $tmpName = $_FILES['documents']['tmp_name'][$i];
+            $originalName = $_FILES['documents']['name'][$i];
+
+            // Skip empty file names
+            if (empty($originalName)) {
+                continue;
+            }
+
+            // Validate file exists and is readable
+            if (!file_exists($tmpName) || !is_readable($tmpName)) {
+                $errors[] = "Document not accessible: " . $originalName;
+                continue;
+            }
+
+            // Validate file type using finfo
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $fileType = finfo_file($finfo, $tmpName);
+                finfo_close($finfo);
+            } else {
+                // Fallback to mime_content_type if finfo is not available
+                $fileType = mime_content_type($tmpName);
+            }
+
+            $allowedTypes = [
+                'application/pdf',
+                'application/msword',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'image/jpeg',
+                'image/jpg',
+                'image/png',
+                'image/gif'
+            ];
+            if (!in_array($fileType, $allowedTypes)) {
+                $errors[] = "Invalid document type for: " . $originalName . " (Type: " . $fileType . ")";
+                continue;
+            }
+
+            // Validate file size (5MB max per document)
+            if ($_FILES['documents']['size'][$i] > 5 * 1024 * 1024) {
+                $errors[] = "Document too large: " . $originalName . " (" . $this->formatBytes($_FILES['documents']['size'][$i]) . "). Max 5MB per document.";
+                continue;
+            }
+
+            // Generate unique filename with timestamp
+            $extension = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+            $filename = 'doc_' . date('Y-m-d_H-i-s') . '_' . $i . '.' . $extension;
+            $filePath = $propertyDir . $filename;
+
+            // Move uploaded file
+            if (move_uploaded_file($tmpName, $filePath)) {
+                $uploadedCount++;
+
+                // Log successful upload
+                error_log("Successfully uploaded document: " . $filename . " for property " . $propertyId);
+            } else {
+                $errors[] = "Failed to upload document: " . $originalName;
+                error_log("Failed to move uploaded document from " . $tmpName . " to " . $filePath);
+            }
+        }
+
+        // Return result
+        if ($uploadedCount > 0) {
+            $message = $uploadedCount . " documents uploaded successfully";
+            if (!empty($errors)) {
+                $message .= ". Issues: " . implode(', ', $errors);
+            }
+            return [
+                'success' => true,
+                'count' => $uploadedCount,
+                'message' => $message
+            ];
+        } else {
+            return [
+                'success' => false,
+                'count' => 0,
+                'message' => !empty($errors) ? implode(', ', $errors) : 'No documents were uploaded'
+            ];
+        }
+    }
+
+    // Get upload error message
+    private function getUploadErrorMessage($error)
+    {
+        switch ($error) {
+            case UPLOAD_ERR_INI_SIZE:
+                return 'File exceeds upload_max_filesize (' . ini_get('upload_max_filesize') . ')';
+            case UPLOAD_ERR_FORM_SIZE:
+                return 'File exceeds MAX_FILE_SIZE';
+            case UPLOAD_ERR_PARTIAL:
+                return 'File partially uploaded';
+            case UPLOAD_ERR_NO_FILE:
+                return 'No file uploaded';
+            case UPLOAD_ERR_NO_TMP_DIR:
+                return 'No temporary directory';
+            case UPLOAD_ERR_CANT_WRITE:
+                return 'Cannot write to disk';
+            case UPLOAD_ERR_EXTENSION:
+                return 'Upload stopped by extension';
+            default:
+                return 'Unknown upload error (' . $error . ')';
+        }
+    }
+
+    // Get property images from local storage
+    private function getPropertyImages($propertyId)
+    {
+        $propertyDir = APPROOT . '/../public/uploads/properties/property_' . $propertyId . '/';
+        $urlBase = URLROOT . '/uploads/properties/property_' . $propertyId . '/';
+
+        if (!is_dir($propertyDir)) {
+            return [];
+        }
+
+        $images = [];
+        $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+
+        $files = scandir($propertyDir);
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..' || $file === 'primary.txt' || is_dir($propertyDir . $file)) {
+                continue;
+            }
+
+            $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+            if (in_array($extension, $allowedExtensions)) {
+                $images[] = [
+                    'name' => $file,
+                    'url' => $urlBase . $file,
+                    'path' => $propertyDir . $file,
+                    'size' => filesize($propertyDir . $file),
+                    'modified' => filemtime($propertyDir . $file)
+                ];
+            }
+        }
+
+        // Sort by modification time (newest first)
+        usort($images, function ($a, $b) {
+            return $b['modified'] - $a['modified'];
+        });
+
+        return $images;
+    }
+
+    // Get property documents from local storage
+    private function getPropertyDocuments($propertyId)
+    {
+        $documentsDir = APPROOT . '/../public/uploads/properties/property_' . $propertyId . '/documents/';
+        $urlBase = URLROOT . '/uploads/properties/property_' . $propertyId . '/documents/';
+
+        if (!is_dir($documentsDir)) {
+            return [];
+        }
+
+        $documents = [];
+        $allowedExtensions = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'gif'];
+
+        $files = scandir($documentsDir);
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') {
+                continue;
+            }
+
+            $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+            if (in_array($extension, $allowedExtensions)) {
+                $documents[] = [
+                    'name' => $file,
+                    'url' => $urlBase . $file,
+                    'path' => $documentsDir . $file,
+                    'size' => filesize($documentsDir . $file),
+                    'modified' => filemtime($documentsDir . $file),
+                    'type' => $extension
+                ];
+            }
+        }
+
+        // Sort by modification time (newest first)
+        usort($documents, function ($a, $b) {
+            return $b['modified'] - $a['modified'];
+        });
+
+        return $documents;
+    }
+
+    // Get primary property image
+    private function getPrimaryPropertyImage($propertyId)
+    {
+        $propertyDir = APPROOT . '/../public/uploads/properties/property_' . $propertyId . '/';
+        $primaryFile = $propertyDir . 'primary.txt';
+        $urlBase = URLROOT . '/uploads/properties/property_' . $propertyId . '/';
+
+        // Check if primary image is marked
+        if (file_exists($primaryFile)) {
+            $primaryImageName = trim(file_get_contents($primaryFile));
+            if ($primaryImageName && file_exists($propertyDir . $primaryImageName)) {
+                return $urlBase . $primaryImageName;
+            }
+        }
+
+        // If no primary image set, return the first image
+        $images = $this->getPropertyImages($propertyId);
+        if (!empty($images)) {
+            return $images[0]['url'];
+        }
+
+        // Return default placeholder if no images
+        return URLROOT . '/img/property-placeholder.jpg';
+    }
+
+    // Get property images (AJAX endpoint)
+    public function getPropertyImagesJson($propertyId)
+    {
+        header('Content-Type: application/json');
+
+        if (!$propertyId) {
+            echo json_encode(['success' => false, 'message' => 'Invalid property ID']);
+            return;
+        }
+
+        $images = $this->getPropertyImages($propertyId);
+
+        echo json_encode([
+            'success' => true,
+            'images' => $images
+        ]);
+    }
+
     /**
-     *  NEW METHOD: Suggest Rent (AJAX Endpoint)
-     * Called when landlord clicks "Get Smart Rent Suggestion" button
+     * Suggest Rent (AJAX Endpoint)
      */
     public function suggestRent()
     {
@@ -167,6 +774,9 @@ class Landlord extends Controller
             redirect('landlord/properties');
         }
 
+        // Get property images
+        $property->images = $this->getPropertyImages($id);
+
         $data = ['property' => $property];
 
         $this->view('landlord/v_edit_properties', $data);
@@ -175,6 +785,14 @@ class Landlord extends Controller
     public function update($id)
     {
         if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            // Check for upload errors first
+            $uploadError = $this->checkUploadLimits();
+            if ($uploadError) {
+                flash('property_message', $uploadError, 'alert alert-danger');
+                redirect('landlord/edit/' . $id);
+                return;
+            }
+
             $_POST = filter_input_array(INPUT_POST, FILTER_SANITIZE_SPECIAL_CHARS);
 
             // Ensure only valid ENUM values for pet_policy and laundry
@@ -183,25 +801,45 @@ class Landlord extends Controller
 
             $data = [
                 'id' => $id,
-                'address' => trim($_POST['address']),
-                'property_type' => trim($_POST['property_type']),
-                'bedrooms' => (int)$_POST['bedrooms'],
-                'bathrooms' => (float)$_POST['bathrooms'],
-                'sqft' => (int)$_POST['sqft'],
-                'rent' => (float)$_POST['rent'],
-                'deposit' => (float)$_POST['deposit'],
+                'address' => trim($_POST['address'] ?? ''),
+                'property_type' => trim($_POST['property_type'] ?? ''),
+                'bedrooms' => (int)($_POST['bedrooms'] ?? 0),
+                'bathrooms' => (float)($_POST['bathrooms'] ?? 0),
+                'sqft' => !empty($_POST['sqft']) ? (int)$_POST['sqft'] : null,
+                'rent' => (float)($_POST['rent'] ?? 0),
+                'deposit' => !empty($_POST['deposit']) ? (float)$_POST['deposit'] : null,
                 'available_date' => !empty($_POST['available_date']) ? $_POST['available_date'] : null,
-                'parking' => trim($_POST['parking']),
+                'parking' => trim($_POST['parking'] ?? ''),
                 'pet_policy' => in_array($_POST['pets'] ?? '', $validPetPolicies) ? $_POST['pets'] : 'no',
                 'laundry' => in_array($_POST['laundry'] ?? '', $validLaundry) ? $_POST['laundry'] : 'none',
-                'description' => trim($_POST['description']),
+                'description' => trim($_POST['description'] ?? ''),
             ];
 
+            // Use the same validation method for updates
+            $errors = $this->validatePropertyData($data);
+            if (!empty($errors)) {
+                flash('property_message', implode(', ', $errors), 'alert alert-danger');
+                redirect('landlord/edit/' . $id);
+                return;
+            }
+
             if ($this->propertyModel->update($data)) {
-                flash('property_message', 'Property Updated Successfully');
+                // Handle new image uploads if any
+                if (isset($_FILES['photos']) && !empty($_FILES['photos']['name'][0])) {
+                    $imageUploadResult = $this->handleImageUploads($id);
+                    if ($imageUploadResult['success']) {
+                        flash('property_message', 'Property updated successfully with ' . $imageUploadResult['count'] . ' new images', 'alert alert-success');
+                    } else {
+                        flash('property_message', 'Property updated but image upload failed: ' . $imageUploadResult['message'], 'alert alert-warning');
+                    }
+                } else {
+                    flash('property_message', 'Property Updated Successfully', 'alert alert-success');
+                }
+
                 redirect('landlord/properties');
             } else {
-                die('Something went wrong.');
+                flash('property_message', 'Failed to update property', 'alert alert-danger');
+                redirect('landlord/edit/' . $id);
             }
         } else {
             $property = $this->propertyModel->getPropertyById($id);
@@ -209,6 +847,10 @@ class Landlord extends Controller
                 flash('property_message', 'Property not found');
                 redirect('landlord/properties');
             }
+
+            // Get property images
+            $property->images = $this->getPropertyImages($id);
+
             $data = ['property' => $property];
             $this->view('landlord/v_edit_properties', $data);
         }
@@ -216,12 +858,49 @@ class Landlord extends Controller
 
     public function delete($id)
     {
+        // Delete property images first
+        $this->deletePropertyImages($id);
+
+        // Then delete the property
         if ($this->propertyModel->deleteProperty($id)) {
-            flash('property_message', 'Property removed');
+            flash('property_message', 'Property and all associated images removed');
             redirect('landlord/properties');
         } else {
             die('Something went wrong');
         }
+    }
+
+    // Delete all property images and documents
+    private function deletePropertyImages($propertyId)
+    {
+        $propertyDir = APPROOT . '/../public/uploads/properties/property_' . $propertyId . '/';
+
+        if (is_dir($propertyDir)) {
+            // Function to recursively delete directory and its contents
+            $this->deleteDirectory($propertyDir);
+        }
+    }
+
+    // Helper method to recursively delete directory
+    private function deleteDirectory($dir)
+    {
+        if (!is_dir($dir)) {
+            return false;
+        }
+
+        $files = scandir($dir);
+        foreach ($files as $file) {
+            if ($file !== '.' && $file !== '..') {
+                $filePath = $dir . $file;
+                if (is_dir($filePath)) {
+                    $this->deleteDirectory($filePath);
+                } else {
+                    unlink($filePath);
+                }
+            }
+        }
+
+        return rmdir($dir);
     }
 
     public function maintenance()
@@ -303,12 +982,8 @@ class Landlord extends Controller
             redirect('users/login');
         }
 
-        // Get landlord's properties for dropdown
-        // $properties = $this->propertyModel->getPropertiesByLandlordId($_SESSION['user_id']);
-
         $data = [
             'title' => 'New Maintenance Request - Rentigo',
-            // 'properties' => $properties,
             'property_id' => '',
             'request_title' => '',
             'category' => '',
